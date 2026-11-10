@@ -74,15 +74,8 @@ if uploaded_file is not None:
     try:
         df = pd.read_csv(BytesIO(file_bytes))
 
-        st.subheader("Uploaded CSV Preview")
-
-        st.write(f"Total rows: {len(df)}")
-        st.write(f"Total columns: {len(df.columns)}")
-
-        st.dataframe(
-            df,
-            height=400
-        )
+        st.subheader("Uploaded CSV")
+        st.dataframe(df)
 
         total = calculate_sum(df)
 
@@ -126,15 +119,23 @@ if uploaded_file is not None:
                             "Score added to leaderboard!"
                         )
 
-                except Exception as e:
-                    st.error(f"Supabase submission error: {e}")
+                except Exception:
+                    st.error(
+                        "Unable to submit your score right now. "
+                        "Please try again later."
+                    )
 
-    except (
-        pd.errors.ParserError,
-        pd.errors.EmptyDataError,
-        UnicodeError
-    ) as e:
-        st.error(f"Could not read CSV: {e}")
+    except pd.errors.EmptyDataError:
+        st.error(
+            "The uploaded CSV is empty. "
+            "Please upload a CSV containing data."
+        )
+
+    except (pd.errors.ParserError, UnicodeError):
+        st.error(
+            "The uploaded file could not be read as a CSV. "
+            "Please check its formatting and encoding."
+        )
 
 
 # ----------------------------------
@@ -172,5 +173,8 @@ try:
     else:
         st.write("No CSV files submitted yet.")
 
-except Exception as e:
-    st.error(f"Supabase leaderboard error: {e}")
+except Exception:
+    st.error(
+        "Unable to load the leaderboard right now. "
+        "Please refresh the page and try again."
+    )
