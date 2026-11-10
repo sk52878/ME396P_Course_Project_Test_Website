@@ -126,12 +126,8 @@ if uploaded_file is not None:
                             "Score added to leaderboard!"
                         )
 
-                except Exception:
-                    st.error(
-                        "Could not submit score. "
-                        "The file may already exist "
-                        "or the database may be unavailable."
-                    )
+                except Exception as e:
+                    st.error(f"Supabase submission error: {e}")
 
     except (
         pd.errors.ParserError,
@@ -176,5 +172,5 @@ try:
     else:
         st.write("No CSV files submitted yet.")
 
-except Exception:
-    st.error("Could not load leaderboard.")
+except Exception as e:
+    st.error(f"Supabase leaderboard error: {e}")
