@@ -45,7 +45,7 @@ def clear_username():
 # 4. Streamlit website
 # ----------------------------------
 
-st.title("CSV Sum Leaderboard")
+st.title("CSV Sum Leaderboard", anchor=False)
 
 st.write(
     "Enter your username and upload a CSV "
@@ -74,12 +74,12 @@ if uploaded_file is not None:
     try:
         df = pd.read_csv(BytesIO(file_bytes))
 
-        st.subheader("Uploaded CSV")
+        st.subheader("Uploaded CSV Preview", anchor=False)
         st.dataframe(df)
 
         total = calculate_sum(df)
 
-        st.subheader("Your Score")
+        st.subheader("Your Score", anchor=False)
         st.metric("Sum of all numbers", total)
 
         if st.button("Submit to Leaderboard"):
@@ -142,7 +142,7 @@ if uploaded_file is not None:
 # 5. Display leaderboard
 # ----------------------------------
 
-st.header("Leaderboard")
+st.header("Leaderboard", anchor=False)
 
 if st.button("Refresh Leaderboard"):
     st.rerun()
