@@ -52,8 +52,8 @@ def read_mot_from_zip(zip_bytes):
             for info in archive.infolist()
             if not info.is_dir()
             and (
-                info.filename == MOT_PATH
-                or info.filename.endswith("/" + MOT_PATH)
+                info.filename.lower() == MOT_PATH.lower()
+                or info.filename.lower().endswith("/" + MOT_PATH.lower())
             )
         ]
 
