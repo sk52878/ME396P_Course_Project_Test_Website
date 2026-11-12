@@ -43,7 +43,7 @@ except Exception:
 def read_mot_from_zip(zip_bytes):
     """Return (dataframe, metadata_text, mot_bytes, internal_path)."""
     if len(zip_bytes) > MAX_ZIP_SIZE:
-        raise ValueError("The ZIP exceeds the 50 MB upload limit.")
+        raise ValueError("The ZIP exceeds the 200 MB upload limit.")
 
     with ZipFile(BytesIO(zip_bytes)) as archive:
         # Permit an arbitrary outer folder, but require the exact relative path.
