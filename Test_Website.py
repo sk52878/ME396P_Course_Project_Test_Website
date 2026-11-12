@@ -1,33 +1,113 @@
-import streamlit as st
-import pandas as pd
 import hashlib
-from io import BytesIO
+import logging
+import math
+from io import BytesIO, StringIO
+from zipfile import BadZipFile, ZipFile
+
+import pandas as pd
+import streamlit as st
 from supabase import create_client
 
+
 # ----------------------------------
-# 1. Connect to Supabase
+# 1. Configuration and Supabase
 # ----------------------------------
+
+logger = logging.getLogger(__name__)
+
+MOT_PATH = "OpenSimData/Kinematics/Walk1.mot"
+MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50 MB compressed upload
+MAX_MOT_SIZE = 20 * 1024 * 1024  # 20 MB uncompressed MOT
+
 
 @st.cache_resource
 def get_database():
     return create_client(
         st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"]
+        st.secrets["SUPABASE_KEY"],
     )
 
-supabase = get_database()
+
+try:
+    supabase = get_database()
+except Exception:
+    logger.exception("Failed to initialize Supabase")
+    st.error("The leaderboard service is unavailable. Please try again later.")
+    st.stop()
 
 
 # ----------------------------------
-# 2. Calculate CSV metric
+# 2. Read MOT from ZIP and calculate score
 # ----------------------------------
+
+
+def read_mot_from_zip(zip_bytes):
+    """Return (dataframe, metadata_text, mot_bytes, internal_path)."""
+    if len(zip_bytes) > MAX_ZIP_SIZE:
+        raise ValueError("The ZIP exceeds the 50 MB upload limit.")
+
+    with ZipFile(BytesIO(zip_bytes)) as archive:
+        # Permit an arbitrary outer folder, but require the exact relative path.
+        matches = [
+            info
+            for info in archive.infolist()
+            if not info.is_dir()
+            and (
+                info.filename == MOT_PATH
+                or info.filename.endswith("/" + MOT_PATH)
+            )
+        ]
+
+        if not matches:
+            raise FileNotFoundError(
+                f"The ZIP must contain '{MOT_PATH}'."
+            )
+        if len(matches) != 1:
+            raise ValueError(
+                "The ZIP contains multiple matching Walk1.mot files. "
+                "Please include exactly one."
+            )
+
+        mot_info = matches[0]
+        if mot_info.file_size > MAX_MOT_SIZE:
+            raise ValueError("The Walk1.mot file exceeds the 20 MB limit.")
+
+        # Read only the requested entry, with a hard cap on extracted bytes.
+        with archive.open(mot_info) as mot_file:
+            mot_bytes = mot_file.read(MAX_MOT_SIZE + 1)
+        if len(mot_bytes) > MAX_MOT_SIZE:
+            raise ValueError("The Walk1.mot file exceeds the 20 MB limit.")
+
+    mot_text = mot_bytes.decode("utf-8-sig")
+    lines = mot_text.splitlines()
+    endheader_index = next(
+        (i for i, line in enumerate(lines)
+         if line.strip().lower() == "endheader"),
+        None,
+    )
+    if endheader_index is None:
+        raise ValueError("Walk1.mot is missing the 'endheader' marker.")
+
+    # Keep every line of the original MOT metadata, including 'endheader'.
+    metadata_text = "\n".join(lines[:endheader_index + 1])
+    table_text = "\n".join(lines[endheader_index + 1:])
+    if not table_text.strip():
+        raise ValueError("Walk1.mot contains no data table after 'endheader'.")
+
+    # The first nonempty line after endheader becomes the DataFrame column names.
+    df = pd.read_csv(StringIO(table_text), sep=r"\s+")
+    if df.empty or len(df.columns) == 0:
+        raise ValueError("Walk1.mot contains no data rows.")
+
+    return df, metadata_text, mot_bytes, mot_info.filename
+
 
 def calculate_sum(df):
-    numeric_df = df.apply(
-        pd.to_numeric,
-        errors="coerce"
-    )
-    return float(numeric_df.sum().sum())
+    numeric_df = df.apply(pd.to_numeric, errors="coerce")
+    total = float(numeric_df.sum().sum())
+    if not math.isfinite(total):
+        raise ValueError("The MOT score is not finite. Check the numeric data.")
+    return total
 
 
 # ----------------------------------
@@ -37,63 +117,58 @@ def calculate_sum(df):
 if "username" not in st.session_state:
     st.session_state.username = ""
 
+
 def clear_username():
     st.session_state.username = ""
 
 
 # ----------------------------------
-# 4. Streamlit website
+# 4. Streamlit website and submission
 # ----------------------------------
 
-st.title("CSV Sum Leaderboard", anchor=False)
-
+st.title("MOT Sum Leaderboard", anchor=False)
 st.write(
-    "Enter your username and upload a CSV "
-    "file to compete on the leaderboard!"
+    "Enter your username and upload a ZIP containing "
+    f"`{MOT_PATH}` to compete on the leaderboard!"
 )
 
 username = st.text_input(
     "Enter your username",
     max_chars=30,
-    key="username"
+    key="username",
 )
-
-st.button(
-    "Clear Username",
-    on_click=clear_username
-)
+st.button("Clear Username", on_click=clear_username)
 
 uploaded_file = st.file_uploader(
-    "Choose a CSV file",
-    type=["csv"]
+    "Choose a ZIP file",
+    type=["zip"],
 )
 
 if uploaded_file is not None:
-    file_bytes = uploaded_file.getvalue()
-
     try:
-        df = pd.read_csv(BytesIO(file_bytes))
+        df, metadata_text, mot_bytes, internal_path = read_mot_from_zip(
+            uploaded_file.getvalue()
+        )
 
-        st.subheader("Uploaded CSV Preview", anchor=False)
+        st.subheader("Uploaded MOT Preview", anchor=False)
+        st.caption(f"File found: {internal_path}")
+        st.write(f"Rows: {len(df)} | Columns: {len(df.columns)}")
         st.dataframe(df)
 
-        total = calculate_sum(df)
+        # Metadata is not part of the numeric table, but is retained and visible.
+        with st.expander("Original MOT metadata header"):
+            st.code(metadata_text, language="text")
 
+        total = calculate_sum(df)
         st.subheader("Your Score", anchor=False)
         st.metric("Sum of all numbers", total)
 
         if st.button("Submit to Leaderboard"):
-
             if not username.strip():
                 st.error("Please enter a username.")
-
             else:
-                file_hash = hashlib.sha256(
-                    file_bytes
-                ).hexdigest()
-
+                file_hash = hashlib.sha256(mot_bytes).hexdigest()
                 try:
-                    # Check for duplicate file
                     existing = (
                         supabase.table("leaderboard")
                         .select("id")
@@ -103,39 +178,41 @@ if uploaded_file is not None:
                     )
 
                     if existing.data:
-                        st.info(
-                            "This CSV was already submitted."
-                        )
+                        st.info("This MOT file was already submitted.")
                     else:
-                        # Insert new submission
                         supabase.table("leaderboard").insert({
                             "username": username.strip(),
                             "filename": uploaded_file.name,
                             "file_hash": file_hash,
-                            "total": total
+                            "total": total,
                         }).execute()
-
-                        st.success(
-                            "Score added to leaderboard!"
+                        st.success("Score added to leaderboard!")
+                except Exception as exc:
+                    # Unique constraint also protects against simultaneous submissions.
+                    if str(getattr(exc, "code", "")) == "23505":
+                        st.info("This MOT file was already submitted.")
+                    else:
+                        logger.exception("Supabase submission failed")
+                        st.error(
+                            "Unable to submit your score right now. "
+                            "Please try again later."
                         )
 
-                except Exception:
-                    st.error(
-                        "Unable to submit your score right now. "
-                        "Please try again later."
-                    )
-
+    except FileNotFoundError as exc:
+        st.error(str(exc))
+    except BadZipFile:
+        st.error("The uploaded file is not a valid ZIP archive.")
+    except UnicodeError:
+        st.error("Walk1.mot could not be decoded as UTF-8 text.")
     except pd.errors.EmptyDataError:
-        st.error(
-            "The uploaded CSV is empty. "
-            "Please upload a CSV containing data."
-        )
-
-    except (pd.errors.ParserError, UnicodeError):
-        st.error(
-            "The uploaded file could not be read as a CSV. "
-            "Please check its formatting and encoding."
-        )
+        st.error("Walk1.mot has no readable table columns or data.")
+    except pd.errors.ParserError:
+        st.error("Walk1.mot has an invalid or inconsistent data table.")
+    except ValueError as exc:
+        st.error(str(exc))
+    except (RuntimeError, EOFError, OSError):
+        logger.exception("Unable to extract MOT from ZIP")
+        st.error("The ZIP could not be read or contains a damaged MOT entry.")
 
 
 # ----------------------------------
@@ -143,7 +220,6 @@ if uploaded_file is not None:
 # ----------------------------------
 
 st.header("Leaderboard", anchor=False)
-
 if st.button("Refresh Leaderboard"):
     st.rerun()
 
@@ -155,25 +231,16 @@ try:
         .limit(1000)
         .execute()
     )
-
     leaderboard = pd.DataFrame(response.data)
-
     if not leaderboard.empty:
         leaderboard.index += 1
         leaderboard.index.name = "Rank"
-
-        leaderboard.columns = [
-            "Username",
-            "File Name",
-            "Total Sum"
-        ]
-
+        leaderboard.columns = ["Username", "File Name", "Total Sum"]
         st.dataframe(leaderboard)
-
     else:
-        st.write("No CSV files submitted yet.")
-
+        st.write("No MOT files submitted yet.")
 except Exception:
+    logger.exception("Supabase leaderboard retrieval failed")
     st.error(
         "Unable to load the leaderboard right now. "
         "Please refresh the page and try again."
