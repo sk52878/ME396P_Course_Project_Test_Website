@@ -37,9 +37,8 @@ except Exception:
 
 
 # ----------------------------------
-# 2. Read MOT from ZIP and calculate score
+# 2. Read MOT from ZIP
 # ----------------------------------
-
 
 def read_mot_from_zip(zip_bytes):
     """Return (dataframe, metadata_text, mot_bytes, internal_path)."""
@@ -102,6 +101,10 @@ def read_mot_from_zip(zip_bytes):
     return df, metadata_text, mot_bytes, mot_info.filename
 
 
+# ----------------------------------
+# 3. Calculate scores from MOT
+# ----------------------------------
+
 def calculate_sum(df):
     numeric_df = df.apply(pd.to_numeric, errors="coerce")
     total = float(numeric_df.sum().sum())
@@ -111,7 +114,7 @@ def calculate_sum(df):
 
 
 # ----------------------------------
-# 3. Username session state
+# 4. Username session state
 # ----------------------------------
 
 if "username" not in st.session_state:
@@ -123,7 +126,7 @@ def clear_username():
 
 
 # ----------------------------------
-# 4. Streamlit website and submission
+# 5. Streamlit website and submission
 # ----------------------------------
 
 st.title("MOT Sum Leaderboard", anchor=False)
@@ -216,7 +219,7 @@ if uploaded_file is not None:
 
 
 # ----------------------------------
-# 5. Display leaderboard
+# 6. Display leaderboard
 # ----------------------------------
 
 st.header("Leaderboard", anchor=False)
