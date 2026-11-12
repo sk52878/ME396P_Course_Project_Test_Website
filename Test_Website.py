@@ -236,24 +236,28 @@ try:
     )
     leaderboard = pd.DataFrame(response.data)
     if not leaderboard.empty:
-        leaderboard.index += 1
-        leaderboard.index.name = "Rank"
-        leaderboard.columns = ["Username", "File Name", "Total Sum"]
-        st.dataframe(
-            leaderboard,
-            width="stretch",
-            column_config={
-                "Username": st.column_config.TextColumn(
-                    width=200
-                ),
-                "File Name": st.column_config.TextColumn(
-                    width=200
-                ),
-                "Total Sum": st.column_config.NumberColumn(
-                    width=200
-                ),
-            }
+        leaderboard = leaderboard.rename(columns={
+            "username": "Username",
+            "filename": "File Name",
+            "total": "Total Sum",
+        })
+        leaderboard["Rank"] = (
+            leaderboard["Total Sum"]
+            .rank(method="min", ascending=False)
+            .astype(int)
         )
+        leaderboard = leaderboard.sort_values(
+            by=["Total Sum", "Username", "File Name"],
+            ascending=[False, True, True],
+            key=lambda column: (
+                column.str.casefold()
+                if column.name in ("Username", "File Name")
+                else column
+            ),
+            kind="stable",
+        )
+        leaderboard = leaderboard.set_index("Rank")
+        st.dataframe(leaderboard)
     else:
         st.write("No MOT files submitted yet.")
 except Exception:
