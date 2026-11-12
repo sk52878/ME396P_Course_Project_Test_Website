@@ -16,7 +16,7 @@ from supabase import create_client
 logger = logging.getLogger(__name__)
 
 MOT_PATH = "OpenSimData/Kinematics/Walk1.mot"
-MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50 MB compressed upload
+MAX_ZIP_SIZE = 200 * 1024 * 1024  # 200 MB compressed upload
 MAX_MOT_SIZE = 20 * 1024 * 1024  # 20 MB uncompressed MOT
 
 
