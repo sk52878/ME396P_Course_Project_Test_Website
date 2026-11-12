@@ -239,7 +239,21 @@ try:
         leaderboard.index += 1
         leaderboard.index.name = "Rank"
         leaderboard.columns = ["Username", "File Name", "Total Sum"]
-        st.dataframe(leaderboard)
+        st.dataframe(
+            leaderboard,
+            width="stretch",
+            column_config={
+                "Username": st.column_config.TextColumn(
+                    width=200
+                ),
+                "File Name": st.column_config.TextColumn(
+                    width=200
+                ),
+                "Total Sum": st.column_config.NumberColumn(
+                    width=200
+                ),
+            }
+        )
     else:
         st.write("No MOT files submitted yet.")
 except Exception:
