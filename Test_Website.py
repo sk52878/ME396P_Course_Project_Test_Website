@@ -308,10 +308,10 @@ try:
                     width=200
                 ),
                 "File Name": st.column_config.TextColumn(
-                    width=400
+                    width=200
                 ),
                 "Gait Efficiency Score": st.column_config.NumberColumn(
-                    width=100,
+                    width=200,
                     format="%.3f",
                 ),
             }
