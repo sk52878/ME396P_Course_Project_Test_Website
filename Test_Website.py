@@ -145,7 +145,7 @@ def score_uploaded_mots(mot_files):
             raise ValueError("Gait analysis did not generate its score and chart.")
 
         result = json.loads(json_path.read_text(encoding="utf-8"))
-        score = float(result["score"])
+        score = round(float(result["score"]), 3)
         if not math.isfinite(score):
             raise ValueError("Gait analysis returned an invalid score.")
         return score, process.stdout, chart_path.read_bytes(), digest.hexdigest()
@@ -212,7 +212,7 @@ if uploaded_file is not None:
         total, report, chart_bytes, file_hash, mot_count = st.session_state.gait_analysis
         st.caption(f"Analyzed {mot_count} MOT file(s) from {MOT_FOLDER}.")
         st.subheader("Your Score", anchor=False)
-        st.metric("Gait Efficiency Score (out of 100)", f"{total:.2f}")
+        st.metric("Gait Efficiency Score (out of 100)", f"{total:.3f}")
 
         # Open automatically once for each newly uploaded ZIP.
         if st.session_state.get("gait_dialog_shown_for") != upload_id:
@@ -285,6 +285,10 @@ try:
     leaderboard = pd.DataFrame(response.data)
     if not leaderboard.empty:
         leaderboard.columns = ["Username", "File Name", "Gait Efficiency Score"]
+        # Rank using the same three-decimal precision as result.json and new submissions.
+        leaderboard["Gait Efficiency Score"] = (
+            pd.to_numeric(leaderboard["Gait Efficiency Score"]).round(3)
+        )
         leaderboard["Rank"] = leaderboard["Gait Efficiency Score"].rank(method="min", ascending=False).astype(int)
         leaderboard = leaderboard.sort_values(
             by=["Gait Efficiency Score", "Username"],
@@ -304,7 +308,8 @@ try:
                     width=200
                 ),
                 "Gait Efficiency Score": st.column_config.NumberColumn(
-                    width=200
+                    width=200,
+                    format="%.3f",
                 ),
             }
         )
