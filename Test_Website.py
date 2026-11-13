@@ -311,7 +311,7 @@ try:
                     width=300
                 ),
                 "Gait Efficiency Score": st.column_config.NumberColumn(
-                    width=150,
+                    width=75,
                     format="%.3f",
                 ),
             }
