@@ -305,13 +305,13 @@ try:
                     width=50
                 ),
                 "Username": st.column_config.TextColumn(
-                    width=200
+                    width=150
                 ),
                 "File Name": st.column_config.TextColumn(
-                    width=200
+                    width=300
                 ),
                 "Gait Efficiency Score": st.column_config.NumberColumn(
-                    width=200,
+                    width=150,
                     format="%.3f",
                 ),
             }
