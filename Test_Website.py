@@ -96,14 +96,14 @@ def score_uploaded_mots(mot_files):
     if not GAIT_SCRIPT.is_file():
         raise RuntimeError("gait_score.py is missing from the website directory.")
 
-    # Include all MOT filenames and contents in duplicate-submission detection.
+    # Hash only MOT contents, not filenames or ZIP paths. Sorting the
+    # individual hashes makes file order irrelevant while preserving duplicates.
     digest = hashlib.sha256()
-    for name, contents in mot_files:
-        name_bytes = name.casefold().encode("utf-8")
-        digest.update(len(name_bytes).to_bytes(8, "big"))
-        digest.update(name_bytes)
-        digest.update(len(contents).to_bytes(8, "big"))
-        digest.update(contents)
+    content_hashes = sorted(
+        hashlib.sha256(contents).digest() for _, contents in mot_files
+    )
+    for content_hash in content_hashes:
+        digest.update(content_hash)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
