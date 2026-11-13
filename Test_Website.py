@@ -1,7 +1,12 @@
 import hashlib
 import logging
+import json
 import math
-from io import BytesIO, StringIO
+import subprocess
+import sys
+import tempfile
+from io import BytesIO
+from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
@@ -15,7 +20,8 @@ from supabase import create_client
 
 logger = logging.getLogger(__name__)
 
-MOT_PATH = "OpenSimData/Kinematics/Walk1.mot"
+MOT_FOLDER = "OpenSimData/Kinematics"
+GAIT_SCRIPT = Path(__file__).resolve().parent / "gait_score.py"
 MAX_ZIP_SIZE = 200 * 1024 * 1024  # 200 MB compressed upload
 MAX_MOT_SIZE = 20 * 1024 * 1024  # 20 MB uncompressed MOT
 
@@ -37,80 +43,120 @@ except Exception:
 
 
 # ----------------------------------
-# 2. Read MOT from ZIP
+# 2. Extract all MOT files and calculate gait score
 # ----------------------------------
 
-def read_mot_from_zip(zip_bytes):
-    """Return (dataframe, metadata_text, mot_bytes, internal_path)."""
+def read_mot_files_from_zip(zip_bytes):
+    """Return [(original ZIP path, MOT bytes), ...] in deterministic order."""
     if len(zip_bytes) > MAX_ZIP_SIZE:
         raise ValueError("The ZIP exceeds the 200 MB upload limit.")
 
     with ZipFile(BytesIO(zip_bytes)) as archive:
-        # Permit an arbitrary outer folder, but require the exact relative path.
-        matches = [
-            info
-            for info in archive.infolist()
-            if not info.is_dir()
-            and (
-                info.filename.lower() == MOT_PATH.lower()
-                or info.filename.lower().endswith("/" + MOT_PATH.lower())
-            )
-        ]
+        matches = []
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            # Allow an optional outer ZIP folder; require MOT files directly
+            # inside OpenSimData/Kinematics, regardless of capitalization.
+            parts = info.filename.replace("\\", "/").split("/")
+            if (len(parts) >= 3
+                    and parts[-3].casefold() == "opensimdata"
+                    and parts[-2].casefold() == "kinematics"
+                    and parts[-1].casefold().endswith(".mot")
+                    and parts[-1] not in ("", ".", "..")
+                    and all(part not in ("", ".", "..") for part in parts)):
+                matches.append(info)
 
         if not matches:
             raise FileNotFoundError(
-                f"The ZIP must contain '{MOT_PATH}'."
+                f"No .mot files found directly inside '{MOT_FOLDER}'."
             )
-        if len(matches) != 1:
-            raise ValueError(
-                "The ZIP contains multiple matching Walk1.mot files. "
-                "Please include exactly one."
+        if len(matches) > 100:
+            raise ValueError("The ZIP contains more than 100 MOT files.")
+
+        matches.sort(key=lambda info: (info.filename.casefold(), info.filename))
+        files = []
+        total_extracted = 0
+        for info in matches:
+            if info.file_size > MAX_MOT_SIZE:
+                raise ValueError(f"MOT file exceeds 20 MB: {info.filename}")
+            with archive.open(info) as entry:
+                contents = entry.read(MAX_MOT_SIZE + 1)
+            if len(contents) > MAX_MOT_SIZE:
+                raise ValueError(f"MOT file exceeds 20 MB: {info.filename}")
+            total_extracted += len(contents)
+            if total_extracted > MAX_ZIP_SIZE:
+                raise ValueError("Combined extracted MOT files exceed 200 MB.")
+            files.append((info.filename, contents))
+    return files
+
+
+def score_uploaded_mots(mot_files):
+    """Run the unchanged gait_score.py CLI, returning score, report, chart, hash."""
+    if not GAIT_SCRIPT.is_file():
+        raise RuntimeError("gait_score.py is missing from the website directory.")
+
+    # Include all MOT filenames and contents in duplicate-submission detection.
+    digest = hashlib.sha256()
+    for name, contents in mot_files:
+        name_bytes = name.casefold().encode("utf-8")
+        digest.update(len(name_bytes).to_bytes(8, "big"))
+        digest.update(name_bytes)
+        digest.update(len(contents).to_bytes(8, "big"))
+        digest.update(contents)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        file_paths = []
+        used_names = set()
+        for number, (name, contents) in enumerate(mot_files, start=1):
+            # Only use the basename, never a path from the ZIP archive.
+            basename = name.replace("\\", "/").split("/")[-1]
+            if basename.casefold() in used_names:
+                basename = f"trial_{number:03d}.mot"
+            used_names.add(basename.casefold())
+            file_path = temp_path / basename
+            file_path.write_bytes(contents)
+            file_paths.append(str(file_path))
+
+        chart_path = temp_path / "chart.png"
+        json_path = temp_path / "result.json"
+        command = [
+            sys.executable, str(GAIT_SCRIPT), *file_paths,
+            "--plot", str(chart_path), "--json", str(json_path),
+        ]
+        try:
+            process = subprocess.run(
+                command,
+                cwd=temp_path,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+                env=None,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("Gait analysis timed out after 120 seconds.") from exc
 
-        mot_info = matches[0]
-        if mot_info.file_size > MAX_MOT_SIZE:
-            raise ValueError("The Walk1.mot file exceeds the 20 MB limit.")
+        if process.returncode != 0:
+            details = (process.stderr or process.stdout).strip()
+            raise ValueError("Gait analysis failed: " + details[:2000])
+        if not json_path.is_file() or not chart_path.is_file():
+            raise ValueError("Gait analysis did not generate its score and chart.")
 
-        # Read only the requested entry, with a hard cap on extracted bytes.
-        with archive.open(mot_info) as mot_file:
-            mot_bytes = mot_file.read(MAX_MOT_SIZE + 1)
-        if len(mot_bytes) > MAX_MOT_SIZE:
-            raise ValueError("The Walk1.mot file exceeds the 20 MB limit.")
-
-    mot_text = mot_bytes.decode("utf-8-sig")
-    lines = mot_text.splitlines()
-    endheader_index = next(
-        (i for i, line in enumerate(lines)
-         if line.strip().lower() == "endheader"),
-        None,
-    )
-    if endheader_index is None:
-        raise ValueError("Walk1.mot is missing the 'endheader' marker.")
-
-    # Keep every line of the original MOT metadata, including 'endheader'.
-    metadata_text = "\n".join(lines[:endheader_index + 1])
-    table_text = "\n".join(lines[endheader_index + 1:])
-    if not table_text.strip():
-        raise ValueError("Walk1.mot contains no data table after 'endheader'.")
-
-    # The first nonempty line after endheader becomes the DataFrame column names.
-    df = pd.read_csv(StringIO(table_text), sep=r"\s+")
-    if df.empty or len(df.columns) == 0:
-        raise ValueError("Walk1.mot contains no data rows.")
-
-    return df, metadata_text, mot_bytes, mot_info.filename
+        result = json.loads(json_path.read_text(encoding="utf-8"))
+        score = float(result["score"])
+        if not math.isfinite(score):
+            raise ValueError("Gait analysis returned an invalid score.")
+        return score, process.stdout, chart_path.read_bytes(), digest.hexdigest()
 
 
-# ----------------------------------
-# 3. Calculate scores from MOT
-# ----------------------------------
-
-def calculate_sum(df):
-    numeric_df = df.apply(pd.to_numeric, errors="coerce")
-    total = float(numeric_df.sum().sum())
-    if not math.isfinite(total):
-        raise ValueError("The MOT score is not finite. Check the numeric data.")
-    return total
+@st.dialog("Gait Analysis Results", width="large")
+def show_gait_results(report, chart_bytes):
+    st.subheader("Command-line report")
+    st.code(report, language="text")
+    st.subheader("Score vs. number of steps")
+    st.image(chart_bytes, caption="Chart generated by gait_score.py", use_container_width=True)
 
 
 # ----------------------------------
@@ -129,10 +175,10 @@ def clear_username():
 # 5. Streamlit website and submission
 # ----------------------------------
 
-st.title("MOT Sum Leaderboard", anchor=False)
+st.title("Gait Efficiency Leaderboard", anchor=False)
 st.write(
-    "Enter your username and upload a ZIP containing "
-    f"`{MOT_PATH}` to compete on the leaderboard!"
+    "Enter your username and upload a ZIP containing one or more `.mot` files "
+    f"directly inside `{MOT_FOLDER}` to compete on the leaderboard!"
 )
 
 username = st.text_input(
@@ -149,28 +195,37 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     try:
-        df, metadata_text, mot_bytes, internal_path = read_mot_from_zip(
-            uploaded_file.getvalue()
-        )
+        zip_bytes = uploaded_file.getvalue()
+        upload_id = hashlib.sha256(zip_bytes).hexdigest()
 
-        st.subheader("Uploaded MOT Preview", anchor=False)
-        st.caption(f"File found: {internal_path}")
-        st.write(f"Rows: {len(df)} | Columns: {len(df.columns)}")
-        st.dataframe(df)
+        # Cache the most recently analyzed upload across Streamlit reruns
+        # (e.g., typing a username or clicking a button).
+        if st.session_state.get("analyzed_upload_id") != upload_id:
+            with st.spinner("Analyzing gait trials and generating chart..."):
+                mot_files = read_mot_files_from_zip(zip_bytes)
+                score, report, chart_bytes, file_hash = score_uploaded_mots(mot_files)
+            st.session_state.analyzed_upload_id = upload_id
+            st.session_state.gait_analysis = (
+                score, report, chart_bytes, file_hash, len(mot_files)
+            )
 
-        # Metadata is not part of the numeric table, but is retained and visible.
-        with st.expander("Original MOT metadata header"):
-            st.code(metadata_text, language="text")
-
-        total = calculate_sum(df)
+        total, report, chart_bytes, file_hash, mot_count = st.session_state.gait_analysis
+        st.caption(f"Analyzed {mot_count} MOT file(s) from {MOT_FOLDER}.")
         st.subheader("Your Score", anchor=False)
-        st.metric("Sum of all numbers", total)
+        st.metric("Gait Efficiency Score (out of 100)", f"{total:.2f}")
+
+        # Open automatically once for each newly uploaded ZIP.
+        if st.session_state.get("gait_dialog_shown_for") != upload_id:
+            st.session_state.gait_dialog_shown_for = upload_id
+            show_gait_results(report, chart_bytes)
+
+        if st.button("View Full Analysis and Chart"):
+            show_gait_results(report, chart_bytes)
 
         if st.button("Submit to Leaderboard"):
             if not username.strip():
                 st.error("Please enter a username.")
             else:
-                file_hash = hashlib.sha256(mot_bytes).hexdigest()
                 try:
                     existing = (
                         supabase.table("leaderboard")
@@ -181,7 +236,7 @@ if uploaded_file is not None:
                     )
 
                     if existing.data:
-                        st.info("This MOT file was already submitted.")
+                        st.info("These MOT files were already submitted.")
                     else:
                         supabase.table("leaderboard").insert({
                             "username": username.strip(),
@@ -191,9 +246,8 @@ if uploaded_file is not None:
                         }).execute()
                         st.success("Score added to leaderboard!")
                 except Exception as exc:
-                    # Unique constraint also protects against simultaneous submissions.
                     if str(getattr(exc, "code", "")) == "23505":
-                        st.info("This MOT file was already submitted.")
+                        st.info("These MOT files were already submitted.")
                     else:
                         logger.exception("Supabase submission failed")
                         st.error(
@@ -205,17 +259,11 @@ if uploaded_file is not None:
         st.error(str(exc))
     except BadZipFile:
         st.error("The uploaded file is not a valid ZIP archive.")
-    except UnicodeError:
-        st.error("Walk1.mot could not be decoded as UTF-8 text.")
-    except pd.errors.EmptyDataError:
-        st.error("Walk1.mot has no readable table columns or data.")
-    except pd.errors.ParserError:
-        st.error("Walk1.mot has an invalid or inconsistent data table.")
-    except ValueError as exc:
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
         st.error(str(exc))
-    except (RuntimeError, EOFError, OSError):
-        logger.exception("Unable to extract MOT from ZIP")
-        st.error("The ZIP could not be read or contains a damaged MOT entry.")
+    except (RuntimeError, EOFError, OSError, KeyError, TypeError):
+        logger.exception("Unable to analyze uploaded MOT files")
+        st.error("The uploaded ZIP could not be analyzed. Please check its contents.")
 
 
 # ----------------------------------
@@ -236,10 +284,10 @@ try:
     )
     leaderboard = pd.DataFrame(response.data)
     if not leaderboard.empty:
-        leaderboard.columns = ["Username", "File Name", "Total Sum"]
-        leaderboard["Rank"] = leaderboard["Total Sum"].rank(method="min", ascending=False).astype(int)
+        leaderboard.columns = ["Username", "File Name", "Gait Efficiency Score"]
+        leaderboard["Rank"] = leaderboard["Gait Efficiency Score"].rank(method="min", ascending=False).astype(int)
         leaderboard = leaderboard.sort_values(
-            by=["Total Sum", "Username"],
+            by=["Gait Efficiency Score", "Username"],
             ascending=[False, True],
             key=lambda col: col.str.casefold() if col.name == "Username" else col,
             kind="stable",
@@ -255,7 +303,7 @@ try:
                 "File Name": st.column_config.TextColumn(
                     width=200
                 ),
-                "Total Sum": st.column_config.NumberColumn(
+                "Gait Efficiency Score": st.column_config.NumberColumn(
                     width=200
                 ),
             }
