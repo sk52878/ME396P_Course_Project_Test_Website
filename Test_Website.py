@@ -301,14 +301,17 @@ try:
             leaderboard,
             width="stretch",
             column_config={
+                "Rank": st.column_config.TextColumn(
+                    width=50
+                ),
                 "Username": st.column_config.TextColumn(
                     width=200
                 ),
                 "File Name": st.column_config.TextColumn(
-                    width=200
+                    width=400
                 ),
                 "Gait Efficiency Score": st.column_config.NumberColumn(
-                    width=200,
+                    width=100,
                     format="%.3f",
                 ),
             }
